@@ -37,19 +37,27 @@ function detectDisplay(callback) {
     });
 }
 
-// ── Install inject_prompt.sh if not present ──
-function ensureInjectionScript() {
-    if (fs.existsSync(SCRIPT_PATH)) return;
+// ── IDE Profiles: shortcut and window name for each supported IDE ──
+const IDE_PROFILES = {
+    antigravity: { names: ['Antigravity', 'antigravity'], chatKey: 'ctrl+shift+i' },
+    vscode: { names: ['Visual Studio Code', 'Code - OSS', 'Code'], chatKey: 'ctrl+shift+i' },
+    cursor: { names: ['Cursor'], chatKey: 'ctrl+l' },
+    windsurf: { names: ['Windsurf'], chatKey: 'ctrl+l' },
+};
+
+// ── Install inject_prompt.sh (with configurable chat shortcut) ──
+function ensureInjectionScript(chatShortcut) {
     const script = `#!/bin/bash
 # inject_prompt.sh — Reliably inject a prompt into the IDE AI chat
 PROMPT="$1"
 DISPLAY_VAL="\${2:-:1}"
+CHAT_KEY="\${3:-ctrl+shift+i}"
 export DISPLAY="$DISPLAY_VAL"
 LOG="/tmp/remote_ai_bridge.log"
 echo "$(date): Injecting: \${PROMPT:0:60}..." >> "$LOG"
 
 # Find and focus IDE window
-for NAME in "Antigravity" "antigravity" "Visual Studio Code" "Code" "Cursor"; do
+for NAME in "Antigravity" "antigravity" "Visual Studio Code" "Code" "Cursor" "Windsurf"; do
     WID=$(xdotool search --name "$NAME" 2>/dev/null | head -1)
     [ -n "$WID" ] && break
 done
@@ -62,8 +70,8 @@ else
     echo "$(date): WARNING: Could not find IDE window" >> "$LOG"
 fi
 
-# Open chat panel (try common shortcuts)
-xdotool key --clearmodifiers ctrl+shift+i 2>/dev/null
+# Open chat panel with configured shortcut
+xdotool key --clearmodifiers $CHAT_KEY 2>/dev/null
 sleep 1
 
 # Paste prompt and submit
@@ -71,28 +79,32 @@ echo -n "$PROMPT" | xclip -selection clipboard 2>/dev/null
 xdotool key --clearmodifiers ctrl+v 2>/dev/null
 sleep 0.3
 xdotool key --clearmodifiers Return 2>/dev/null
-echo "$(date): Prompt submitted" >> "$LOG"
+echo "$(date): Prompt submitted (key=$CHAT_KEY)" >> "$LOG"
 
 # Auto-accept "Allow this conversation" dialog
-sleep 2
-xdotool key --clearmodifiers Tab Return 2>/dev/null
-sleep 1
-xdotool key --clearmodifiers Return 2>/dev/null
-echo "$(date): Allow dialog handled" >> "$LOG"
+for WAIT in 3 5 8 12; do
+    sleep \$WAIT
+    [ -n "$WID" ] && xdotool windowactivate "$WID" 2>/dev/null
+    xdotool key --clearmodifiers Tab Tab Return 2>/dev/null
+    echo "$(date): Allow attempt at +\${WAIT}s" >> "$LOG"
+done
+echo "$(date): Injection complete" >> "$LOG"
 `;
     fs.writeFileSync(SCRIPT_PATH, script, { mode: 0o755 });
 }
 
 // ── Inject Prompt ──
-function injectPrompt(prompt, output, display) {
+function injectPrompt(prompt, output, display, chatShortcut) {
     output.appendLine(`📨 Received: "${prompt.length > 60 ? prompt.substring(0, 60) + '...' : prompt}"`);
-    ensureInjectionScript();
+    ensureInjectionScript(chatShortcut);
     const escaped = prompt.replace(/'/g, "'\\''");
-    exec(`bash "${SCRIPT_PATH}" '${escaped}' '${display}'`, { timeout: 15000 }, (err, stdout, stderr) => {
+    exec(`bash "${SCRIPT_PATH}" '${escaped}' '${display}' '${chatShortcut}'`, { timeout: 45000 }, (err, stdout, stderr) => {
         if (err) {
             output.appendLine(`❌ Injection error: ${err.message}`);
+            vscode.window.showErrorMessage(`Remote AI Bridge: Injection failed — ${err.message}`);
         } else {
             output.appendLine('✅ Prompt injected.');
+            vscode.window.showInformationMessage('📨 Telegram prompt injected into chat.');
         }
     });
 }
@@ -109,7 +121,8 @@ class BridgeProvider {
             const cmdMap = {
                 setToken: 'remote-bridge.setBotToken', setChat: 'remote-bridge.setChatId',
                 start: 'remote-bridge.restartDaemon', stop: 'remote-bridge.stopDaemon',
-                status: 'remote-bridge.status', installDeps: 'remote-bridge.installDeps'
+                status: 'remote-bridge.status', installDeps: 'remote-bridge.installDeps',
+                setIde: 'remote-bridge.setIdeProfile'
             };
             if (cmdMap[data.type]) vscode.commands.executeCommand(cmdMap[data.type]);
         });
@@ -117,6 +130,8 @@ class BridgeProvider {
 
     getHtml() {
         const home = os.homedir();
+        const config = getConfig();
+        const ide = config.ide_profile || 'antigravity';
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -135,14 +150,16 @@ class BridgeProvider {
     .danger { background: #d32f2f; } .danger:hover { background: #b71c1c; }
     .success { background: #2e7d32; } .success:hover { background: #1b5e20; }
     .purple { background: #6a1b9a; } .purple:hover { background: #4a148c; }
+    .orange { background: #e65100; } .orange:hover { background: #bf360c; }
     hr { border: 1px solid var(--vscode-widget-border); margin: 12px 0; }
     .card { background: var(--vscode-editor-background); border: 1px solid var(--vscode-panel-border); padding: 10px; border-radius: 8px; margin-bottom: 12px; font-size: 12px; line-height: 1.6; }
     .cmd { font-family: monospace; background: var(--vscode-textCodeBlock-background); padding: 1px 4px; border-radius: 3px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; background: #1565c0; color: #fff; }
 </style>
 </head>
 <body>
     <h3>🌉 Remote AI Bridge</h3>
-    <div class="subtitle">by Argos Automation</div>
+    <div class="subtitle">by Argos Automation &nbsp; <span class="badge">${ide}</span></div>
 
     <div class="card">
         <b>Quick Setup:</b><br/>
@@ -153,6 +170,7 @@ class BridgeProvider {
 
     <button class="btn" onclick="post('setToken')">🔑 Set Bot Token</button>
     <button class="btn" onclick="post('setChat')">💬 Set Chat ID</button>
+    <button class="btn orange" onclick="post('setIde')">🖥️ Set IDE (${ide})</button>
     <hr>
     <button class="btn purple" onclick="copyInstruction()">📋 Copy Agent Instructions</button>
     <hr>
@@ -186,10 +204,16 @@ class BridgeProvider {
 
 function activate(context) {
     const output = vscode.window.createOutputChannel("Remote AI Bridge");
-    output.appendLine("🌉 Remote AI Bridge active.");
+    output.appendLine("🌉 Remote AI Bridge v1.0.0 active.");
 
     let currentDisplay = ':0';
     detectDisplay(d => { currentDisplay = d; output.appendLine(`🖥️ DISPLAY=${currentDisplay}`); });
+
+    // Get IDE profile
+    const config = getConfig();
+    let ideProfile = config.ide_profile || 'antigravity';
+    let chatShortcut = (IDE_PROFILES[ideProfile] || IDE_PROFILES.antigravity).chatKey;
+    output.appendLine(`🖥️ IDE: ${ideProfile} (chat: ${chatShortcut})`);
 
     // Register sidebar panel
     const provider = new BridgeProvider(context.extensionUri);
@@ -208,7 +232,9 @@ function activate(context) {
                 lastProcessedTimestamp = data.timestamp;
                 const prompt = data.prompt;
                 try { delete data.prompt; delete data.timestamp; fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2)); } catch (e) { }
-                injectPrompt(prompt, output, currentDisplay);
+
+                vscode.window.showInformationMessage(`📱 Telegram: "${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}"`);
+                injectPrompt(prompt, output, currentDisplay, chatShortcut);
                 setTimeout(() => { isProcessing = false; }, 3000);
             }
         } catch (e) { }
@@ -222,32 +248,89 @@ function activate(context) {
     // ── Commands ──
     const cmds = {
         'remote-bridge.setBotToken': async () => {
-            const token = await vscode.window.showInputBox({ prompt: 'Enter your Telegram Bot Token:', ignoreFocusOut: true });
-            if (token) { let c = getConfig(); c.bot_token = token; saveConfig(c); vscode.window.showInformationMessage('Bot Token saved.'); }
+            const token = await vscode.window.showInputBox({ prompt: 'Enter your Telegram Bot Token (from @BotFather):', ignoreFocusOut: true });
+            if (token) { let c = getConfig(); c.bot_token = token; saveConfig(c); vscode.window.showInformationMessage('✅ Bot Token saved.'); }
         },
         'remote-bridge.setChatId': async () => {
-            const id = await vscode.window.showInputBox({ prompt: 'Enter your Telegram Chat ID:', ignoreFocusOut: true });
-            if (id) { let c = getConfig(); c.chat_id = id; saveConfig(c); vscode.window.showInformationMessage('Chat ID saved.'); }
+            const id = await vscode.window.showInputBox({ prompt: 'Enter your Telegram Chat ID (from @userinfobot):', ignoreFocusOut: true });
+            if (id) { let c = getConfig(); c.chat_id = id; saveConfig(c); vscode.window.showInformationMessage('✅ Chat ID saved.'); }
+        },
+        'remote-bridge.setIdeProfile': async () => {
+            const profiles = Object.keys(IDE_PROFILES);
+            const pick = await vscode.window.showQuickPick(
+                profiles.map(p => ({ label: p.charAt(0).toUpperCase() + p.slice(1), description: `Chat shortcut: ${IDE_PROFILES[p].chatKey}`, id: p })),
+                { placeHolder: 'Select your IDE' }
+            );
+            if (pick) {
+                let c = getConfig();
+                c.ide_profile = pick.id;
+                saveConfig(c);
+                ideProfile = pick.id;
+                chatShortcut = IDE_PROFILES[pick.id].chatKey;
+                // Re-write inject script with new shortcut
+                ensureInjectionScript(chatShortcut);
+                vscode.window.showInformationMessage(`✅ IDE set to ${pick.label} (shortcut: ${chatShortcut})`);
+                output.appendLine(`🖥️ IDE changed to: ${pick.label} (${chatShortcut})`);
+            }
         },
         'remote-bridge.restartDaemon': () => {
-            exec('systemctl --user restart remote-ai-bridge.service', err => {
-                if (err) vscode.window.showErrorMessage('Failed to start: ' + err.message);
-                else { vscode.window.showInformationMessage('Remote AI Bridge Started 🚀'); output.appendLine("✅ Daemon started."); }
+            // First ensure standalone_bot.js and node_modules are in BRIDGE_DIR
+            const botSrc = path.join(__dirname, 'standalone_bot.js');
+            const botDst = path.join(BRIDGE_DIR, 'standalone_bot.js');
+            try { fs.copyFileSync(botSrc, botDst); } catch (e) { }
+
+            // Install node_modules if needed
+            const nmDir = path.join(BRIDGE_DIR, 'node_modules');
+            if (!fs.existsSync(nmDir)) {
+                const t = vscode.window.createTerminal("Bridge Setup");
+                t.show();
+                t.sendText(`cd "${BRIDGE_DIR}" && npm init -y && npm install node-telegram-bot-api && echo "✅ Ready! Click Start/Restart again."`);
+                vscode.window.showInformationMessage('Installing dependencies first... Click Start/Restart again after completion.');
+                return;
+            }
+
+            // Copy service file if not present
+            const svcSrc = path.join(__dirname, 'remote-ai-bridge.service');
+            const svcDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+            const svcDst = path.join(svcDir, 'remote-ai-bridge.service');
+            try {
+                if (!fs.existsSync(svcDir)) fs.mkdirSync(svcDir, { recursive: true });
+                if (fs.existsSync(svcSrc)) fs.copyFileSync(svcSrc, svcDst);
+            } catch (e) { }
+
+            exec('systemctl --user daemon-reload && systemctl --user enable --now remote-ai-bridge.service', (err, stdout, stderr) => {
+                if (err) {
+                    output.appendLine(`❌ Start failed: ${err.message}`);
+                    vscode.window.showErrorMessage('Failed to start daemon: ' + err.message);
+                } else {
+                    output.appendLine("✅ Daemon started.");
+                    vscode.window.showInformationMessage('🚀 Remote AI Bridge Started!');
+                }
             });
         },
         'remote-bridge.stopDaemon': () => {
             exec('systemctl --user stop remote-ai-bridge.service', err => {
                 if (err) vscode.window.showErrorMessage('Failed to stop: ' + err.message);
-                else { vscode.window.showInformationMessage('Remote AI Bridge Stopped 🛑'); output.appendLine("🛑 Daemon stopped."); }
+                else { vscode.window.showInformationMessage('🛑 Remote AI Bridge Stopped.'); output.appendLine("🛑 Daemon stopped."); }
             });
         },
         'remote-bridge.status': () => {
-            exec('systemctl --user status remote-ai-bridge.service', (err, stdout, stderr) => {
-                output.appendLine("\n--- Daemon Status ---"); output.appendLine(stdout || stderr || "Service not found."); output.show(true);
+            exec('systemctl --user is-active remote-ai-bridge.service', (err, stdout) => {
+                const active = stdout && stdout.trim() === 'active';
+                if (active) {
+                    exec('systemctl --user show remote-ai-bridge.service --property=ActiveEnterTimestamp', (e, ts) => {
+                        const since = ts ? ts.trim().split('=')[1] : 'unknown';
+                        vscode.window.showInformationMessage(`✅ Daemon running since ${since}`);
+                        output.appendLine(`✅ Active since ${since}`);
+                    });
+                } else {
+                    vscode.window.showWarningMessage('⚠️ Daemon is not running. Click Start/Restart.');
+                    output.appendLine("⚠️ Daemon not running.");
+                }
             });
         },
         'remote-bridge.installDeps': () => {
-            if (os.platform() !== 'linux') { vscode.window.showInformationMessage('Auto-install is Linux only.'); return; }
+            if (os.platform() !== 'linux') { vscode.window.showInformationMessage('ℹ️ Auto-install is Linux only. Install xdotool, xclip, and scrot manually.'); return; }
             const t = vscode.window.createTerminal("Bridge Setup");
             t.show();
             t.sendText('sudo apt-get update && sudo apt-get install -y xdotool xclip scrot gnome-screenshot && echo "✅ Dependencies installed!"');

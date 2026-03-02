@@ -65,6 +65,10 @@
                 "title": "Remote Bridge: Set Chat ID"
             },
             {
+                "command": "remote-bridge.setIdeProfile",
+                "title": "Remote Bridge: Set IDE Profile"
+            },
+            {
                 "command": "remote-bridge.restartDaemon",
                 "title": "Remote Bridge: Start/Restart Daemon"
             },
