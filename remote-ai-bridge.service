@@ -1,0 +1,19 @@
+[Unit]
+Description=Remote AI Bridge — Telegram Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.remote-ai-bridge
+ExecStart=/usr/bin/node %h/.remote-ai-bridge/standalone_bot.js
+Environment=NODE_PATH=%h/.remote-ai-bridge/node_modules
+Environment=DISPLAY=:1
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Install]
+WantedBy=default.target
