@@ -63,9 +63,9 @@ for NAME in "Antigravity" "antigravity" "Visual Studio Code" "Code" "Cursor" "Wi
 done
 
 if [ -n "$WID" ]; then
-    xdotool windowactivate --sync "$WID" 2>/dev/null
+    xdotool windowactivate "$WID" 2>/dev/null
     echo "$(date): Focused window $WID" >> "$LOG"
-    sleep 0.3
+    sleep 0.5
 else
     echo "$(date): WARNING: Could not find IDE window" >> "$LOG"
 fi
@@ -77,16 +77,16 @@ sleep 1
 # Paste prompt and submit
 echo -n "$PROMPT" | xclip -selection clipboard 2>/dev/null
 xdotool key --clearmodifiers ctrl+v 2>/dev/null
-sleep 0.3
+sleep 0.5
 xdotool key --clearmodifiers Return 2>/dev/null
 echo "$(date): Prompt submitted (key=$CHAT_KEY)" >> "$LOG"
 
 # Auto-accept "Allow this conversation" dialog
 for WAIT in 3 5 8 12; do
-    sleep \$WAIT
+    sleep $WAIT
     [ -n "$WID" ] && xdotool windowactivate "$WID" 2>/dev/null
     xdotool key --clearmodifiers Tab Tab Return 2>/dev/null
-    echo "$(date): Allow attempt at +\${WAIT}s" >> "$LOG"
+    echo "$(date): Allow attempt at +${WAIT}s" >> "$LOG"
 done
 echo "$(date): Injection complete" >> "$LOG"
 `;
