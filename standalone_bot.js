@@ -14,8 +14,9 @@ let botToken = '';
 let chatId = '';
 
 // Read credentials from config
+let config = {};
 try {
-    const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
     botToken = config.bot_token || '';
     chatId = config.chat_id || '';
 } catch (e) { }
@@ -99,10 +100,44 @@ bot.on('message', async msg => {
 
             default:
                 if (!text.startsWith('/')) {
-                    let existing = {};
-                    try { existing = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch (e) { }
-                    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...existing, prompt: text, timestamp: Date.now() }, null, 2));
-                    bot.sendMessage(fromId, '⏳ Prompt sent to IDE...');
+                    const SCRIPT_PATH = path.join(BRIDGE_DIR, 'inject_prompt.sh');
+                    const script = `#!/bin/bash
+PROMPT="$1"
+DISPLAY_VAL="\${2:-:1}"
+CHAT_KEY="\${3:-ctrl+shift+i}"
+export DISPLAY="$DISPLAY_VAL"
+LOG="/tmp/remote_ai_bridge.log"
+echo "$(date): Injecting: \${PROMPT:0:60}..." >> "$LOG"
+
+for NAME in "Antigravity" "antigravity" "Visual Studio Code" "Code" "Cursor" "Windsurf"; do
+    WID=$(xdotool search --name "$NAME" 2>/dev/null | head -1)
+    [ -n "$WID" ] && break
+done
+
+if [ -n "$WID" ]; then
+    xdotool windowactivate "$WID" 2>/dev/null
+    sleep 0.5
+fi
+
+xdotool key --clearmodifiers $CHAT_KEY 2>/dev/null
+sleep 1
+
+echo -n "$PROMPT" | xclip -selection clipboard 2>/dev/null
+xdotool key --clearmodifiers ctrl+v 2>/dev/null
+sleep 0.5
+xdotool key --clearmodifiers Return 2>/dev/null
+
+for WAIT in 3 5 8 12; do
+    sleep $WAIT
+    [ -n "$WID" ] && xdotool windowactivate "$WID" 2>/dev/null
+    xdotool key --clearmodifiers Tab Tab Return 2>/dev/null
+done
+`;
+                    fs.writeFileSync(SCRIPT_PATH, script, { mode: 0o755 });
+                    const escaped = text.replace(/'/g, "'\\''");
+                    const chatShortcut = config.chat_shortcut || 'ctrl+shift+i';
+                    exec(`bash "${SCRIPT_PATH}" '${escaped}' '${DISPLAY}' '${chatShortcut}'`, { timeout: 45000 });
+                    bot.sendMessage(fromId, '✅ Prompt injected directly into IDE.');
                 }
         }
     } catch (err) {
